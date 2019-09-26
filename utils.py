@@ -7,17 +7,20 @@ from matplotlib import pyplot as plt
 from sklearn import metrics
 
 act_dict = {
-    0: 'softmax',
-    1: 'linear'
+    0: 'softmax', # Multi-class classification
+    1: 'linear',  # Regression
+    2: 'sigmoid', # Binary Classification
+    3: 'tanh',    # Generative
 }
 
 starting_metric = {
     'f1_score':                 0,
     'acc':                      0,
     'accuracy':                 0,
+    'binary_crossentropy':      np.inf,
     'categorical_crossentropy': np.inf,
     'mean_squared_error':       np.inf,
-    'mean_absolute_error':      np.inf
+    'mean_absolute_error':      np.inf,
 }
 
 
