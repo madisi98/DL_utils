@@ -21,6 +21,8 @@ starting_metric = {
     'categorical_crossentropy': np.inf,
     'mean_squared_error':       np.inf,
     'mean_absolute_error':      np.inf,
+    'stndard':                  np.inf,
+    'cuadratic':                np.inf,
 }
 
 
@@ -39,13 +41,15 @@ def create_results_directory(save_dir):
 
 
 def analyze(X, verbose=True, plot=True):
-    results = {}
-    results['shape'] = X.shape
-    results['mean'] = np.mean(X)
-    results['std'] = np.std(X)
-    results['var'] = np.var(X)
-    results['max'] = np.max(X)
-    results['min'] = np.min(X)
+    results = {
+        'shape': X.shape,
+        'mean':  np.mean(X),
+        'std':   np.std(X),
+        'var':   np.var(X),
+        'max':   np.max(X),
+        'min':   np.min(X)
+    }
+
     if verbose:
         for i in results.keys():
             print('X\'s {} is: {}'.format(i, results[i]))
@@ -84,9 +88,9 @@ def f1_score(y_true, y_pred):
 
 
 def keep_training(s, i, l, max_steps, max_idle):
-    if s > 1 and (np.isnan(l) or np.isinf(l)):  # If gradient made loss explode
+    if s > 1 and np.isnan(l):  # If gradient made loss explode
         return False
-    if s >= max_steps or i >= max_idle:  # Normal early sttoping of a net (it has converged)
+    if s >= max_steps or i >= max_idle:  # Normal early stopping of a net (it has converged)
         return False
     return True
 
@@ -97,9 +101,12 @@ def get_metrics(y, preds, mode):
     metric += 'Predictions shape:  ' + str(preds.shape) + '\n'
     pred_probs = preds
 
-    if mode == 0:  # Classification
-        preds = np.argmax(preds, 1)
-        y = np.argmax(y, 1)
+    if mode == 0 or mode == 2:  # Classification or binary
+        if mode == 0:
+            preds = np.argmax(preds, 1)
+            y = np.argmax(y, 1)
+        else:
+            preds = np.round(preds)
 
         metric += 'True values:        ' + str(np.unique(y)) + '\n'
         metric += 'Prediction values:  ' + str(np.unique(preds)) + '\n'
@@ -126,3 +133,20 @@ def get_metrics(y, preds, mode):
         metric += str(metrics.r2_score(y, preds)) + '\n'
 
     return pred_probs, metric, score
+
+
+def feature_matching_loss(y_true, y_pred):
+    means = tf.square( tf.reduce_mean(y_true, axis=1) - tf.reduce_mean(y_pred, axis=1) )
+    stds = tf.square( tf.math.reduce_std(y_true, axis=1) - tf.math.reduce_std(y_pred, axis=1) )
+    return tf.reduce_mean( tf.concat( [means, stds], axis=0 ) )
+
+
+def categorical_crossentropy_nolog(y_true, Y_pred):
+    return - tf.reduce_mean( tf.reduce_sum(y_true * Y_pred, axis=1) )
+
+
+custom_objects = {
+    'f1_score':f1_score,
+    'feature_matching_loss':feature_matching_loss,
+    'categorical_crossentropy_nolog':categorical_crossentropy_nolog,
+}

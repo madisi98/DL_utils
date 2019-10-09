@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import Activation, Dense, BatchNormalization, Dropout, LeakyReLU, Input
+from tensorflow.keras.models import load_model
 from utils import *
 
 
@@ -17,16 +18,13 @@ class Network:
         self.output = params['output_shape']
         self.mode = params['mode']
         self.save_dir = params['save_dir']
+        self.scaler = params['scaler']
         self.train_time = None
 
         self.model = None
-        self.fit = None
-        self.save = None
-        self.summary = None
-        self.predict = None
 
     def trainNetwork(self, params, X_train, Y_train, X_val, Y_val, verbose=False):
-        max_steps = params['max_steps']
+        max_steps = params['max_epochs']
         max_idle = params['max_idle']
         batch_size = params['batch_size']
 
@@ -56,7 +54,7 @@ class Network:
                     max_val_metric = val_metrics[self.metrics[0]]
                     idle = 0
                     if self.save_dir:
-                        self.model.save(self.save_dir + '.h5')
+                        self.save()
                 else:
                     idle += 1
                 step_count += 1
@@ -86,6 +84,18 @@ class Network:
             print(metrics)
 
         return preds, score
+    
+    def save(self):
+        if self.save_dir:
+            self.model.save(self.save_dir + '.h5')
+        else:
+            print('Can\'t save, save_dir not defined.')
+            
+    def load(self):
+        if self.save_dir:
+            self.model = load_model(self.save_dir + '.h5', custom_objects=custom_objects)
+        else:
+            print('Can\'t load, save_dir not defined.')
 
 
 class SequentialNetwork(Network):
@@ -146,4 +156,4 @@ class FCNN(SequentialNetwork):
 
         self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=self.metrics)
         if self.save_dir:
-            self.model.save(self.save_dir + '.h5')
+            self.save()
