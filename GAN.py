@@ -138,19 +138,20 @@ class GAN:
 
     def check_idle(self, c, m, mean='standard', verbose=False):
         # Validation loss from (d)iscriminator, (g)enerator, (c)lassifier and (m) best values
+        c, m = np.array(c), np.array(m)
         if verbose:
             print(c,m)
         if mean == 'standard':
-            a = np.mean(c)
-            b = np.mean(m)
+            a = np.mean(c[[0,4]])
+            b = np.mean(m[[0,4]])
         elif mean == 'cuadratic':
-            a = np.sqrt(np.mean(np.square(c)))  # Squared mean; This penalizes the training if any net gets high losses.
-            b = np.sqrt(np.mean(np.square(m)))
+            a = np.sqrt(np.mean(np.square(c[[0,4]])))  # Squared mean; This penalizes the training if any net gets high losses.
+            b = np.sqrt(np.mean(np.square(m[[0,4]])))
         elif mean == 'accuracy':
             if 0 in m:
                 return True
-            b = np.mean([c[0], 1/c[1]]) # Inverse order because higher is better
-            a = np.mean([m[0], 1/m[1]])
+            b = np.mean([c[1], 1/c[4]]) # Inverse order because higher is better
+            a = np.mean([m[1], 1/m[4]])
         return a < b
     
     def get_losses(self, X_real, Y_real_disc, Y_real_class):
@@ -182,7 +183,7 @@ class GAN:
         fake_ratio = train_params['fake_ratio']
         mean = train_params['mean']
 
-        max_val_losses = np.array([starting_metric[mean]] * 2)
+        max_val_losses = np.array([starting_metric[mean]] * 7)
         val_loss = np.inf
         step_count = 0
         idle = 0
@@ -204,36 +205,40 @@ class GAN:
                 latent_z = self.generator.generate_latent_vectors(int(fake_ratio*X_real.shape[0]))
                 Y_train_disc = np.append(Y_real_disc, Y_fake_disc, axis=0)
                 Y_train_class = np.append(Y_real_class, Y_fake_class, axis=0)
-                Y_train_gen = self.discriminator.last_hidden_model.predict(fake_ratio*X_real)
+                if not self.hidden_layer_output:
+                    Y_train_gen = np.ones(latent_z.shape[0])
+                else:
+                    Y_train_gen = self.discriminator.last_hidden_model.predict(fake_ratio*X_real)
 
                 # VALIDATION DATASET
                 X_val = np.append(X_real_val, X_fake_val, axis=0)
                 latent_z_val = self.generator.generate_latent_vectors(X_real_val.shape[0])
                 Y_val_disc = np.append(Y_real_disc_val, Y_fake_disc_val, axis=0)
                 Y_val_class = np.append(Y_real_class_val, Y_fake_class_val, axis=0)
-                Y_val_gen = self.discriminator.last_hidden_model.predict(X_real_val)
+                if not self.hidden_layer_output:
+                    Y_val_gen = np.ones(latent_z_val.shape[0])
+                else:
+                    Y_val_gen = self.discriminator.last_hidden_model.predict(X_real_val)
 
                 # TRAIN
-                disc_hist = self.discriminator.model.fit(X_train, Y_train_disc, epochs=train_ratio[1], batch_size=batch_size, validation_data=(X_val, Y_val_disc), shuffle=True, verbose=0)
-                gen_hist = self.model.fit(latent_z, Y_train_gen, epochs=train_ratio[0], batch_size=batch_size, validation_data=(latent_z_val, Y_val_gen), shuffle=True, verbose=0)
-                class_hist = self.classifier.model.fit(X_train, Y_train_class, epochs=train_ratio[1], batch_size=batch_size, validation_data=(X_val, Y_val_class), shuffle=True, verbose=0)
+                self.discriminator.model.fit(X_train, Y_train_disc, epochs=train_ratio[1], batch_size=batch_size, validation_data=(X_val, Y_val_disc), shuffle=True, verbose=0)
+                self.model.fit(latent_z, Y_train_gen, epochs=train_ratio[0], batch_size=batch_size, validation_data=(latent_z_val, Y_val_gen), shuffle=True, verbose=0)
+                # class_hist = self.classifier.model.fit(X_train, Y_train_class, epochs=train_ratio[1], batch_size=batch_size, validation_data=(X_val, Y_val_class), shuffle=True, verbose=0)
 
-                disc_val_loss = np.mean(disc_hist.history['val_loss'])
-                gen_val_loss = gen_hist.history['val_loss'][-1]
-                class_val_loss = np.mean(class_hist.history['val_loss'])
+                val_losses = self.get_losses(X_real_val, Y_real_disc_val, Y_real_class_val)
 
                 step_count = step_count + 1
                 if step_count >= warm_up:
-                    if self.check_idle(disc_val_loss, gen_val_loss, class_val_loss, max_val_losses):
-                        max_val_losses = [disc_val_loss, gen_val_loss, class_val_loss]
+                    if self.check_idle(val_losses, max_val_losses, mean):
+                        max_val_losses = val_losses
                         idle = 0
                         self.save()
                     else:
                         idle = idle + 1
                 step_time = np.round(time.time() - step_time)
                 if verbose:
-                    print('Step {:3d} idle {:2d}: Disc[{:.5f}]; Gen[{:.5f}]; Class[{:.5f}]; Time: {:.2f}s'.format(
-                           step_count, idle, disc_val_loss, gen_val_loss, class_val_loss, step_time))
+                    print('Step {:3d} idle {:2d}: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]; Time: {:.2f}s'.format(
+                           step_count, idle, *val_losses[:-2], step_time))
 
     def train_on_batches(self, train_params, X_real, Y_real_disc, Y_real_class, X_real_val, Y_real_disc_val, Y_real_class_val):
         max_epochs = train_params['max_epochs']
@@ -247,7 +252,7 @@ class GAN:
         step_count = 0
         epoch = 0
         idle = 0
-        max_val_losses = [starting_metric[mean]]*2
+        max_val_losses = [starting_metric[mean]]*7
         step_time = time.time()
 
         batch_per_epoch = int(X_real.shape[0]/self.batch_size)
@@ -261,9 +266,12 @@ class GAN:
             batch_index = np.random.choice(range(X_real.shape[0]), self.batch_size, replace=False)
             X_fake, Y_fake_disc = self.generator.generate_fake_samples(self.batch_size), np.zeros(self.batch_size)
             latent_z = self.generator.generate_latent_vectors(int(fake_ratio * self.batch_size))
-            Y_train_gen = self.discriminator.last_hidden_model.predict(fake_ratio*X_real[batch_index])#np.ones(latent_z.shape[0])
+            if not self.hidden_layer_output:
+                Y_train_gen = np.ones(latent_z.shape[0])
+            else:
+                Y_train_gen = self.discriminator.last_hidden_model.predict(X_real[batch_index])
 
-            c_loss, c_acc = self.classifier.model.train_on_batch(X_real[batch_index], Y_real_class[batch_index])
+            # c_loss, c_acc = self.classifier.model.train_on_batch(X_real[batch_index], Y_real_class[batch_index])
             d_loss1, d_acc1 = self.discriminator.model.train_on_batch(X_real[batch_index], Y_real_disc[batch_index])
             d_loss2, d_acc2 = self.discriminator.model.train_on_batch(X_fake, Y_fake_disc)
             g_loss = self.model.train_on_batch(latent_z, Y_train_gen)
@@ -274,8 +282,8 @@ class GAN:
                 train_losses = self.get_losses(X_real[batch_index], Y_real_disc[batch_index], Y_real_class[batch_index])
                 val_losses = self.get_losses(X_real_val, Y_real_disc_val, Y_real_class_val)
                 if epoch > warm_up:
-                    if self.check_idle(val_losses[[1,4]], max_val_losses, mean=mean):
-                        max_val_losses = val_losses[[1,4]]
+                    if self.check_idle(val_losses, max_val_losses, mean=mean):
+                        max_val_losses = val_losses
                         idle = 0
                         self.save()
                     else:
@@ -283,8 +291,8 @@ class GAN:
                 step_time = np.round(time.time() - step_time)
                 if verbose:
                     print('Epoch {:3d} idle {:2d}: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]; Time: {}s'.format(
-                        epoch, idle, *train_losses, step_time))
-                    print('              Val: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]'.format(*val_losses))
+                        epoch, idle, *train_losses[:-2], step_time))
+                    print('              Val: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]'.format(*val_losses[:-2]))
                 step_time = time.time()
 
     def score(self, X_real_test, Y_real_class_test, Y_real_disc_test, load_checkpoint=False):

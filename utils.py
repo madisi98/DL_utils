@@ -21,7 +21,7 @@ starting_metric = {
     'categorical_crossentropy': np.inf,
     'mean_squared_error':       np.inf,
     'mean_absolute_error':      np.inf,
-    'stndard':                  np.inf,
+    'standard':                 np.inf,
     'cuadratic':                np.inf,
 }
 
@@ -142,7 +142,7 @@ def feature_matching_loss(y_true, y_pred):
 
 
 def categorical_crossentropy_nolog(y_true, Y_pred):
-    return - tf.reduce_mean( tf.reduce_sum(y_true * Y_pred, axis=1) )
+    return - tf.reduce_mean( tf.reduce_sum(y_true * Y_pred, axis=1) ) + 1
 
 
 custom_objects = {
