@@ -6,6 +6,8 @@ import time
 from matplotlib import pyplot as plt
 from sklearn import metrics
 
+main_layers = ['Dense', 'Conv1D', 'Conv2D', 'LSTM', 'Conv2DTranspose']
+
 act_dict = {
     0: 'softmax', # Multi-class classification
     1: 'linear',  # Regression
@@ -39,7 +41,25 @@ def create_results_directory(save_dir):
         # os.makedirs(save_dir + '/models'.format(save_dir))
         # os.makedirs(save_dir + '/metrics'.format(save_dir))
 
-
+def corr_matrix(df):
+    corr = df.corr()
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    cax = ax.matshow(corr,cmap='coolwarm', vmin=-1, vmax=1)
+    fig.colorbar(cax)
+    ticks = np.arange(0,len(data1.columns),1)
+    ax.set_xticks(ticks)
+    plt.xticks(rotation=90)
+    ax.set_yticks(ticks)
+    ax.set_xticklabels(data1.columns)
+    ax.set_yticklabels(data1.columns)
+    #Descomentar linea para guardar el plot como .png, el primer campo es el nombre del archivo resultante
+    save_file = 'corr_matrix_{}'.format('_'.join(file1.split('/')))
+    save_file = '_'.join(save_file.split('.'))
+    plt.savefig(save_file + '.png', bbox_inches='tight')
+    plt.show()
+        
+        
 def analyze(X, verbose=True, plot=True):
     results = {
         'shape': X.shape,
@@ -64,10 +84,10 @@ def analyze(X, verbose=True, plot=True):
             xaxis, [results['mean'] + results['std']] * (end - start), label='std', color='red')
         std_line12 = plt.plot(
             xaxis, [results['mean'] - results['std']] * (end - start), label='std', color='red')
-        std_line21 = plt.plot(xaxis, [results['mean'] + results['std'] * 2.5] * (
-                end - start), label='std*2', color='green', linestyle='--')
-        std_line22 = plt.plot(xaxis, [results['mean'] - results['std'] * 2.5] * (
-                end - start), label='std*2', color='green', linestyle='--')
+        std_line21 = plt.plot(xaxis, [results['mean'] + results['std'] * 3] * (
+                end - start), label='std*3', color='green', linestyle='--')
+        std_line22 = plt.plot(xaxis, [results['mean'] - results['std'] * 3] * (
+                end - start), label='std*3', color='green', linestyle='--')
         plt.legend()
         plt.show()
     return results
@@ -141,12 +161,16 @@ def feature_matching_loss(y_true, y_pred):
     return tf.reduce_mean( tf.concat( [means, stds], axis=0 ) )
 
 
-def categorical_crossentropy_nolog(y_true, Y_pred):
-    return - tf.reduce_mean( tf.reduce_sum(y_true * Y_pred, axis=1) ) + 1
+def binary_crossentropy_nolog(Y_true, Y_pred):
+    return - tf.reduce_mean( Y_true * Y_pred + (1-Y_true) * (1-Y_pred) ) + 1
+
+def categorical_crossentropy_nolog(Y_true, Y_pred):
+    return - tf.reduce_mean( tf.reduce_sum(Y_true * Y_pred, axis=1) ) + 1
 
 
 custom_objects = {
     'f1_score':f1_score,
     'feature_matching_loss':feature_matching_loss,
+    'binary_crossentropy_nolog':binary_crossentropy_nolog,
     'categorical_crossentropy_nolog':categorical_crossentropy_nolog,
 }

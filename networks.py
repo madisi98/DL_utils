@@ -1,13 +1,13 @@
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import Activation, Dense, BatchNormalization, Dropout, LeakyReLU, Input
+from tensorflow.keras.layers import *
 from tensorflow.keras.models import load_model
 from utils import *
 
 
 class Network:
     def __init__(self, params):
-        self.input = params['input_shape']
+        self.input_shape = params['input_shape']
         self.regularizer = params['regularizer']
         self.dropout = params['dropout']
         self.batch_norm = params['batch_norm']
@@ -15,11 +15,12 @@ class Network:
         self.loss = params['loss']
         self.optimizer = params['optimizer']
         self.metrics = params['metrics']
-        self.output = params['output_shape']
+        self.output_shape = params['output_shape']
         self.mode = params['mode']
         self.save_dir = params['save_dir']
         self.scaler = params['scaler']
         self.train_time = None
+        self.layers = []
 
         self.model = None
 
@@ -108,24 +109,83 @@ class SequentialNetwork(Network):
         self.predict = self.model.predict
         self.save = self.model.save
 
+
     def add_activation(self):
         if type(self.activation) == str:
             self.model.add(Activation(self.activation))
         else:
-            self.model.add(self.activation(alpha=0.01))
+            self.model.add(self.activation)
 
 
 class ModularNetwork(Network):
     def __init__(self, params):
         super().__init__(params)
 
-        self.input = Input(shape=self.input)
+        self.input = Input(shape=self.input_shape)
+        self.layers += [self.input]
 
-    def add_activation(self, l):
+        self.summary = None
+        self.predict = None
+        self.fit = None
+
+    def add_layer(self, layer, arch=[]):
+        if layer in main_layers:
+            for neurons in arch:
+                if layer == 'Dense':
+                    self.layers += [Dense(neurons, kernel_regularizer=self.regularizer)(self.layers[-1])]
+
+                if layer == 'Conv1D':
+                    self.layers += [Conv1D(neurons[0], neurons[1], neurons[2], padding=self.padding,
+                                           kernel_regularizer=self.regularizer)(self.layers[-1])]
+                if layer == 'Conv2D':
+                    self.layers += [Conv2D(neurons[0], neurons[1], neurons[2], padding=self.padding,
+                                           kernel_regularizer=self.regularizer)(self.layers[-1])]
+                if layer == 'Conv2DTranspose':
+                    self.layers += [Conv2DTranspose(neurons[0], neurons[1], neurons[2], padding='same',
+                                                    kernel_regularizer=self.regularizer)(self.layers[-1])]
+                if layer == 'LSTM':
+                    pass
+
+                if self.dropout:
+                    self.add_layer('Dropout')
+                if self.batch_norm:
+                    self.add_layer('BatchNormalization')
+                self.add_activation()
+        if layer == 'Dropout':
+            self.layers += [Dropout(self.dropout)(self.layers[-1])]
+        if layer == 'BatchNormalization':
+            self.layers += [BatchNormalization(momentum=0.8)(self.layers[-1])]
+        if layer == 'Reshape':
+            self.layers += [Reshape(arch)(self.layers[-1])]
+        if layer == 'Flatten':
+            self.layers += [Flatten()(self.layers[-1])]
+
+    def add_activation(self):
         if type(self.activation) == str:
-            return Activation(self.activation)(l)
+            self.layers += [Activation(self.activation)(self.layers[-1])]
         else:
-            return self.activation(alpha=0.01)(l)
+            self.layers += [self.activation(self.layers[-1])]
+
+    def get_layer(self, layer=None, pos=0):
+        if layer is None:
+            return self.layers[pos]
+        l = [x for x in self.model.layers if layer == x._name]
+        print(l)
+        l = [self.model.layers.index(i) for i in l]
+        print(l)
+        return self.layers[l[pos]+1]
+
+    def link_model_methods(self):
+        self.summary = self.model.summary
+        self.predict = self.model.predict
+        self.fit     = self.model.fit
+
+    def compile(self):
+        self.output = Activation(act_dict[self.mode])(self.layers[-1])
+        self.model = Model(self.input, self.output)
+
+        self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=self.metrics)
+        self.link_model_methods()
 
 
 class FCNN(SequentialNetwork):
@@ -137,23 +197,42 @@ class FCNN(SequentialNetwork):
         self.__compile()
 
     def __compile(self):  # NN build
-        self.model.add(Dense(self.architecture[0], kernel_regularizer=self.regularizer, input_shape=self.input))
+        self.model.add(Dense(self.architecture[0], kernel_regularizer=self.regularizer, input_shape=self.input_shape))
+        if self.dropout != 0:
+            self.model.add(Dropout(self.dropout))
         if self.batch_norm:
             self.model.add(BatchNormalization())
         self.add_activation()
-        if self.dropout != 0:
-            self.model.add(Dropout(self.dropout))
         for i in self.architecture[1:]:
             self.model.add(Dense(i, kernel_regularizer=self.regularizer))
+            if self.dropout != 0:
+                self.model.add(Dropout(self.dropout))
             if self.batch_norm:
                 self.model.add(BatchNormalization())
             self.add_activation()
-            if self.dropout != 0:
-                self.model.add(Dropout(self.dropout))
 
-        self.model.add(Dense(self.output))
+        self.model.add(Dense(self.output_shape))
         self.model.add(Activation(act_dict[self.mode]))
 
         self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=self.metrics)
         if self.save_dir:
             self.save()
+
+
+class CNN2D(ModularNetwork):
+    def __init__(self, params):
+        super().__init__(params)
+
+        self.architecture = params['architecture']
+        self.archNN = params['archNN']
+        self.padding = params['padding']
+
+        self.build_model()
+        self.compile()
+
+    def build_model(self):
+        self.add_layer('Conv2D', self.architecture)
+        self.add_layer('Flatten')
+        self.add_layer('Dense', self.archNN)
+        self.add_layer('Dense', self.output_shape)
+

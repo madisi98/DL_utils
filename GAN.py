@@ -13,28 +13,31 @@ class Generator(ModularNetwork):
 
         self.latent_dim   = params['input_shape']
         self.architecture = params['architecture']
+        self.padding = 'same'
 
         self.__compile()
 
     def __compile(self):
-        aux_layer = self.input
-        for i in self.architecture:
-            aux_layer = Dense(i, kernel_regularizer=self.regularizer)(aux_layer)
-            if self.batch_norm:
-                aux_layer = BatchNormalization(momentum=0.8)(aux_layer)
-            if self.dropout:
-                aux_layer = Dropout(self.dropout)(aux_layer)
-            aux_layer = self.add_activation(aux_layer)
-        aux_layer = Dense(np.prod(self.output), kernel_regularizer=self.regularizer)(aux_layer)
+        for layer, arch in self.architecture:
+            self.add_layer(layer, arch)
 
-        self.output = Activation(act_dict[self.mode])(aux_layer)
-        self.model  = Model(self.input, self.output)
+        if len(self.output_shape) == 1:
+            out_layer = Dense(self.output_shape, kernel_regularizer=self.regularizer)(self.layers[-1])
+        else:
+            out_layer = Conv2D(1, self.architecture[1][1][:2], padding='same',
+                               kernel_regularizer=self.regularizer)(self.layers[-1])
+
+        self.output = Activation(act_dict[self.mode])(out_layer)
+        self.model = Model(self.input, self.output)
+
+        self.link_model_methods()
 
     def generate_latent_vectors(self, n):
         return np.random.uniform(0, 1, [n, self.latent_dim])
 
-    def generate_fake_samples(self, n_samples):
-        latent_z = self.generate_latent_vectors(n_samples)
+    def generate_fake_samples(self, n_samples, latent_z=None):
+        if latent_z is None:
+            latent_z = self.generate_latent_vectors(n_samples)
         x = self.model.predict(latent_z, batch_size = 4096)
         return x
 
@@ -50,34 +53,26 @@ class Discriminator(ModularNetwork):
     def __init__(self, params):
         super().__init__(params)
 
-        self.last_hidden = None
         self.architecture = params['architecture']
+        self.padding = 'same'
 
         self.__compile()
 
     def __compile(self):
-        layers = []
-        aux_layer = self.input
-        for i in self.architecture:
-            aux_layer = Dense(i, kernel_regularizer=self.regularizer)(aux_layer)
-            if self.batch_norm:
-                aux_layer = BatchNormalization(momentum=0.8)(aux_layer)
-            if self.dropout:
-                aux_layer = Dropout(self.dropout)(aux_layer)
-            aux_layer = self.add_activation(aux_layer)
-            layers += [aux_layer]
+        for layer, arch in self.architecture:
+            self.add_layer(layer, arch)
+
+        self.last_hidden_model = Model(self.input, self.layers[-1])
         
-        self.last_hidden = layers[-2]
-        self.last_hidden_model = Model(self.input, self.last_hidden)
-        
-        self.d_output = Dense(self.output[0], kernel_regularizer=self.regularizer)(self.last_hidden)
+        self.d_output = Dense(self.output_shape[0], kernel_regularizer=self.regularizer)(self.layers[-1])
         self.d_output = Activation(act_dict[self.mode[0]])(self.d_output)
         self.model = Model(self.input, self.d_output)
         self.model.compile(loss=self.loss[0], optimizer=self.optimizer[0], metrics=self.metrics)
 
         self.model.trainable = False
 
-        self.c_output = Dense(self.output[1])(layers[-1])
+        self.layers += [Dense(100, kernel_regularizer=self.regularizer)(self.get_layer('flatten'))]
+        self.c_output = Dense(self.output_shape[1])(self.layers[-1])
         self.c_output = Activation(act_dict[self.mode[1]])(self.c_output)
         self.c_model = Model(self.input, self.c_output)
         self.c_model.compile(loss=self.loss[1], optimizer=self.optimizer[1], metrics=self.metrics)
@@ -97,6 +92,8 @@ class GAN:
         self.define_discriminator(d_params) # Compiles a Classifier too
         self.define_generator(g_params)
         self.define_gan()
+
+        self.latent_vectors = self.generator.generate_latent_vectors(100)
     
     def define_discriminator(self, params):
         # Defines Discriminator and Classifier
@@ -105,7 +102,9 @@ class GAN:
         self.classifier.model = self.discriminator.c_model
         self.discriminator.mode, self.classifier.mode = self.discriminator.mode
         self.discriminator.save_dir, self.classifier.save_dir = self.discriminator.save_dir
-        
+
+        self.discriminator.link_model_methods()
+
     def define_generator(self, params):
         # Defines generator
         self.generator = Generator(params)
@@ -116,7 +115,7 @@ class GAN:
         if not self.hidden_layer_output:
             out = self.discriminator.model(self.generator.output)
         else:
-            out = Model(self.discriminator.input, self.discriminator.last_hidden)(self.generator.output)
+            out = Model(self.discriminator.input, self.discriminator.layers[-1])(self.generator.output)
         self.model = Model(self.generator.input, out) # Generator input and Discriminator output linked
         self.model.compile(loss=self.generator.loss,
                            optimizer=self.generator.optimizer)
@@ -142,21 +141,23 @@ class GAN:
         if verbose:
             print(c,m)
         if mean == 'standard':
-            a = np.mean(c[[0,4]])
-            b = np.mean(m[[0,4]])
+            a = np.mean(c[[0,2]])
+            b = np.mean(m[[0,2]])
         elif mean == 'cuadratic':
-            a = np.sqrt(np.mean(np.square(c[[0,4]])))  # Squared mean; This penalizes the training if any net gets high losses.
-            b = np.sqrt(np.mean(np.square(m[[0,4]])))
+            a = np.sqrt(np.mean(np.square(c[[0,2]])))  # Squared mean; This penalizes the training if any net gets high losses.
+            b = np.sqrt(np.mean(np.square(m[[0,2]])))
         elif mean == 'accuracy':
             if 0 in m:
                 return True
-            b = np.mean([c[1], 1/c[4]]) # Inverse order because higher is better
-            a = np.mean([m[1], 1/m[4]])
+            b = np.mean([c[1], 1/c[2]]) # Inverse order because higher is better
+            a = np.mean([m[1], 1/m[2]])
         return a < b
     
-    def get_losses(self, X_real, Y_real_disc, Y_real_class):
+    def get_losses(self, X_real, Y_real_disc, Y_real_class, X_class=None):
         X_fake, Y_fake_disc, Y_fake_class = self.generator.generate_fake_dataset(X_real.shape[0], Y_real_class.shape[1])
 
+        if X_class is None:
+            X_class = X_real
         X = np.append(X_real, X_fake, axis=0)
         latent_z = self.generator.generate_latent_vectors(X_real.shape[0])
         Y_disc = np.append(Y_real_disc, Y_fake_disc, axis=0)
@@ -165,13 +166,11 @@ class GAN:
         else:
             Y_gen = self.discriminator.last_hidden_model.predict(X_real)
         
-        c_loss, c_acc = self.classifier.model.evaluate(X_real, Y_real_class, batch_size=self.batch_size, verbose=0)
+        c_loss, c_acc = self.classifier.model.evaluate(X_class, Y_real_class, batch_size=self.batch_size, verbose=0)
         d_loss, d_acc = self.discriminator.model.evaluate(X, Y_disc, batch_size=self.batch_size, verbose=0)
-        d_losst, d_acct = self.discriminator.model.evaluate(X_real, Y_real_disc, batch_size=self.batch_size, verbose=0)
-        d_lossf, d_accf = self.discriminator.model.evaluate(X_fake, Y_fake_disc, batch_size=self.batch_size, verbose=0)
         g_loss = self.model.evaluate(latent_z, Y_gen, batch_size=self.batch_size, verbose=0)
         
-        return np.array([d_loss, d_acc, d_acct, d_accf, g_loss, c_loss, c_acc])
+        return np.array([d_loss, d_acc, g_loss, c_loss, c_acc])
 
     def train(self, train_params, X_real, Y_real_disc, Y_real_class, X_real_val, Y_real_disc_val, Y_real_class_val):
         max_epochs = train_params['max_epochs']
@@ -240,14 +239,16 @@ class GAN:
                     print('Step {:3d} idle {:2d}: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]; Time: {:.2f}s'.format(
                            step_count, idle, *val_losses[:-2], step_time))
 
-    def train_on_batches(self, train_params, X_real, Y_real_disc, Y_real_class, X_real_val, Y_real_disc_val, Y_real_class_val):
+    def train_on_batches(self, train_params, X_real, X_real_class, Y_real_disc, Y_real_class, X_real_val, Y_real_disc_val, Y_real_class_val):
         max_epochs = train_params['max_epochs']
         max_idle = train_params['max_idle']
         verbose = train_params['verbose']
+        plot = train_params['plot']
         warm_up = train_params['warm_up']
         train_ratio = train_params['train_ratio']
         fake_ratio = train_params['fake_ratio']
         mean = train_params['mean']
+        train_classifier = train_params['train_classifier']
 
         step_count = 0
         epoch = 0
@@ -255,23 +256,29 @@ class GAN:
         max_val_losses = [starting_metric[mean]]*7
         step_time = time.time()
 
+        half_batch = int(self.batch_size / 2)
         batch_per_epoch = int(X_real.shape[0]/self.batch_size)
         n_steps = batch_per_epoch * max_epochs
         print('Epochs: {}; Batch Size: {}; Batch/Epoch: {}; Total Batches: {}'.format(max_epochs, self.batch_size, batch_per_epoch, n_steps))
         print('Started training on batches...\n')
-        print('                        D Loss |D Acc | D acc T|D acc F        G Loss         C Loss | C acc                ')
-        print('------------------------------------------------------------------------------------------------------------')
+        print('                        D Loss  D Acc           G Loss         C Loss   C acc                ')
+        print('---------------------------------------------------------------------------------------------')
         while keep_training(epoch, idle, 0, max_epochs, max_idle):
             step_count += 1
-            batch_index = np.random.choice(range(X_real.shape[0]), self.batch_size, replace=False)
-            X_fake, Y_fake_disc = self.generator.generate_fake_samples(self.batch_size), np.zeros(self.batch_size)
+            batch_index = np.random.choice(range(X_real.shape[0]), int(half_batch), replace=False)
+            if half_batch > X_real_class.shape[0]:
+                batch_index_class = np.arange(X_real_class.shape[0])
+            else:
+                batch_index_class = np.random.choice(range(X_real_class.shape[0]), int(half_batch), replace=False)
+            X_fake, Y_fake_disc = self.generator.generate_fake_samples(half_batch), np.zeros(half_batch)
             latent_z = self.generator.generate_latent_vectors(int(fake_ratio * self.batch_size))
             if not self.hidden_layer_output:
                 Y_train_gen = np.ones(latent_z.shape[0])
             else:
                 Y_train_gen = self.discriminator.last_hidden_model.predict(X_real[batch_index])
 
-            # c_loss, c_acc = self.classifier.model.train_on_batch(X_real[batch_index], Y_real_class[batch_index])
+            if train_classifier:
+                c_loss, c_acc = self.classifier.model.train_on_batch(X_real_class[batch_index_class], Y_real_class[batch_index_class])
             d_loss1, d_acc1 = self.discriminator.model.train_on_batch(X_real[batch_index], Y_real_disc[batch_index])
             d_loss2, d_acc2 = self.discriminator.model.train_on_batch(X_fake, Y_fake_disc)
             g_loss = self.model.train_on_batch(latent_z, Y_train_gen)
@@ -279,7 +286,7 @@ class GAN:
             if step_count % batch_per_epoch == 0:
                 epoch += 1
                 
-                train_losses = self.get_losses(X_real[batch_index], Y_real_disc[batch_index], Y_real_class[batch_index])
+                train_losses = self.get_losses(X_real[batch_index], Y_real_disc[batch_index], Y_real_class[batch_index_class], X_real_class[batch_index_class])
                 val_losses = self.get_losses(X_real_val, Y_real_disc_val, Y_real_class_val)
                 if epoch > warm_up:
                     if self.check_idle(val_losses, max_val_losses, mean=mean):
@@ -290,12 +297,23 @@ class GAN:
                         idle += 1
                 step_time = np.round(time.time() - step_time)
                 if verbose:
-                    print('Epoch {:3d} idle {:2d}: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]; Time: {}s'.format(
-                        epoch, idle, *train_losses[:-2], step_time))
-                    print('              Val: Disc[{:.5f};{:.5f};{:.5f};{:.5f}]; Gen[{:.5f}]'.format(*val_losses[:-2]))
+                    print('Epoch {:3d} idle {:2d}: Disc[{:.5f};{:.5f}]; Gen[{:.5f}]; Class[{:.5f};{:.5f}]; Time: {}s'.format(
+                        epoch, idle, *train_losses, step_time))
+                    print('              Val: Disc[{:.5f};{:.5f}]; Gen[{:.5f}]; Class[{:.5f};{:.5f}]'.format(*val_losses))
+                if plot:
+                    rows = 2
+                    columns = 10
+
+                    plt.figure(figsize=(15, 3))
+                    for i in range(rows * columns):
+                        plt.subplot(rows, columns, i + 1)
+                        plt.axis('off')
+                        rn = self.generator.generate_fake_samples(1, latent_z=self.latent_vectors[i].reshape(1,-1))
+                        plt.imshow(rn.reshape(28, 28), cmap='gray')
+                    plt.show()
                 step_time = time.time()
 
-    def score(self, X_real_test, Y_real_class_test, Y_real_disc_test, load_checkpoint=False):
+    def score(self, X_real_test, Y_real_class_test, Y_real_disc_test, load_checkpoint=False, show_mode='print'):
         if load_checkpoint:
             self.load()
 
@@ -304,6 +322,6 @@ class GAN:
         Y_test_disc = np.append(Y_real_disc_test, Y_fake_disc_test, axis=0)
         Y_test_class = np.append(Y_real_class_test, Y_fake_class_test, axis=0)
 
-        self.discriminator.pred(X_test, Y_test_disc, show_mode='print')
-        self.classifier.pred(X_real_test, Y_real_class_test, show_mode='print')
+        self.discriminator.pred(X_test, Y_test_disc, show_mode=show_mode)
+        self.classifier.pred(X_real_test, Y_real_class_test, show_mode=show_mode)
 
