@@ -2,7 +2,7 @@ import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
 from tensorflow.keras.layers import *
 from tensorflow.keras.models import load_model
-from utils import *
+from DL_utils.utils import *
 
 
 class Network:
@@ -24,10 +24,13 @@ class Network:
 
         self.model = None
 
-    def trainNetwork(self, params, X_train, Y_train, X_val, Y_val, verbose=False):
+    def trainNetwork(self, params, X_train, Y_train, X_val, Y_val, X_test=None, Y_test=None):
         max_steps = params['max_epochs']
         max_idle = params['max_idle']
         batch_size = params['batch_size']
+        verbose = params['verbose']
+        epochs_per_steps = params['epochs_per_step']
+        class_weights = params['class_weights']
 
         max_val_metric = starting_metric[self.metrics[0]]
         step_count = 0
@@ -42,8 +45,8 @@ class Network:
         while keep_training(step_count, idle, val_loss, max_steps, max_idle):
             with tf.device('/gpu:0'):
                 step_time = time.time()
-                history = self.model.fit(X_train, Y_train, epochs=5, batch_size=batch_size,
-                                   validation_data=(X_val, Y_val), verbose=0, shuffle=True)
+                history = self.model.fit(X_train, Y_train, epochs=epochs_per_steps, batch_size=batch_size, 
+                                         validation_data=(X_val, Y_val), verbose=verbose, shuffle=True, class_weight=class_weights)
                 # Metrics after current step
                 train_loss = np.mean(history.history['loss'])
                 val_loss = np.mean(history.history['val_loss'])
@@ -65,11 +68,15 @@ class Network:
                     for i in self.metrics:
                         print('\t{} --> Train: {}, Val: {}'.format(i, train_metrics[i], val_metrics[i]))
                     print('\tExec. time: {} Idle: {}\n'.format(int(time.time() - step_time), idle))
+                    
+                    if X_test is not None:
+                        print('Testing metrics:')
+                        self.pred(X_test, Y_test, show_mode='print')
 
         self.train_time = time.time() - time_start
 
     def pred(self, X_test, Y_test, show_mode=None):
-        preds = self.model.predict(X_test)
+        preds = self.model.predict(X_test, batch_size=8192)
         preds, metrics, score = get_metrics(Y_test, preds, self.mode)
 
         if show_mode == 'file':
@@ -107,7 +114,6 @@ class SequentialNetwork(Network):
         self.summary = self.model.summary
         self.fit = self.model.fit
         self.predict = self.model.predict
-        self.save = self.model.save
 
 
     def add_activation(self):

@@ -155,6 +155,55 @@ def get_metrics(y, preds, mode):
     return pred_probs, metric, score
 
 
+def subsample_dataset(X, Y, samples_per_class=None, proportions=None):
+    """Returns a sub-sample a given dataset.
+
+    If the argument 'mode' isn't passed in, the default mode 'balanced' is used.
+
+    Parameters
+    ----------
+    X : np.array or pd.DataFrame, 
+        Dataset to be sub-sampled.
+        
+    Y : np.array or pd.DataFrame, 
+        Tags for X.
+        
+    samples_per_class : int or list of ints, [Must be greater than 0]
+                        Number of samples per class.
+        
+    proportions : float or list of floats, [Must be between 0 and 1]
+                  Proportion of the original dataset wanted to be kept.
+
+    """
+    X_classes, Y_classes = [], []
+    if proportions is not None:
+        samples_per_class = []
+        if type(proportions) != list:
+            proportions = [proportions]*Y.shape[1]
+        for i in range(Y.shape[1]):
+            samples = Y[Y[:,i] == 1].shape[0]
+            samples_per_class += [int(samples*proportions[i])]
+                
+    if samples_per_class is not None:
+        if type(samples_per_class) != list:
+            samples_per_class = [samples_per_class]*Y.shape[1]
+        for i in range(Y.shape[1]):
+            class_x = X[Y[:,i] == 1]
+            class_y = Y[Y[:,i] == 1]
+            random_sample = np.random.choice(range(class_x.shape[0]), samples_per_class[i], replace=False)
+            if not i:
+                X_classes, Y_classes = class_x[random_sample], class_y[random_sample]
+            else:
+                X_classes = np.append(X_classes, class_x[random_sample], axis=0)
+                Y_classes = np.append(Y_classes, class_y[random_sample], axis=0)
+    
+    else: return X,Y
+    return X_classes, Y_classes
+
+####################
+## LOSS FUNCTIONS ##
+####################
+
 def feature_matching_loss(y_true, y_pred):
     means = tf.square( tf.reduce_mean(y_true, axis=1) - tf.reduce_mean(y_pred, axis=1) )
     stds = tf.square( tf.math.reduce_std(y_true, axis=1) - tf.math.reduce_std(y_pred, axis=1) )
