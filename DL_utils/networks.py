@@ -4,7 +4,6 @@ from tensorflow.keras.layers import *
 from tensorflow.keras.models import load_model
 from DL_utils.utils import *
 
-
 class Network:
     def __init__(self, params):
         self.input_shape = params['input_shape']
