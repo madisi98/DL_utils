@@ -1,8 +1,8 @@
-import tensorflow as tf
-from tensorflow.keras.models import Sequential, Model
-from tensorflow.keras.layers import *
-from tensorflow.keras.models import load_model
+from tensorflow.python.keras.models import Model, load_model
+from tensorflow.python.keras.layers import *
 from DL_utils.utils import *
+import time
+
 
 class Network:
     def __init__(self, params):
@@ -30,55 +30,80 @@ class Network:
         verbose = params['verbose']
         epochs_per_steps = params['epochs_per_step']
         class_weights = params['class_weights']
+        es_delta = params['es_delta']
+        es_target = params['es_target']
 
-        max_val_metric = starting_metric[self.metrics[0]]
         step_count = 0
         idle = 0
-        val_loss = np.inf
         time_start = time.time()
-        train_metrics = {x: float() for x in self.metrics}
-        val_metrics = {x: float() for x in self.metrics}
+        val_metrics = {x: '---' for x in self.metrics}
+        test_metrics = {x: '---' for x in self.metrics}
+        if es_target == 'loss':
+            max_val_metric = starting_metric[self.loss]
+        else:
+            max_val_metric = starting_metric[es_target]
 
         if verbose:
-            print("Started training:")
-        while keep_training(step_count, idle, val_loss, max_steps, max_idle):
+            print("Started training:\n")
+        while self.keep_training(step_count, idle, val_metrics[es_target], max_steps, max_idle):
             with tf.device('/gpu:0'):
                 step_time = time.time()
-                history = self.model.fit(X_train, Y_train, epochs=epochs_per_steps, batch_size=batch_size, 
-                                         validation_data=(X_val, Y_val), verbose=verbose, shuffle=True, class_weight=class_weights)
-                # Metrics after current step
-                train_loss = np.mean(history.history['loss'])
-                val_loss = np.mean(history.history['val_loss'])
-                for i in self.metrics:
-                    train_metrics[i] = np.mean(history.history[i])
-                    val_metrics[i] = np.mean(history.history['val_' + i])
+                self.model.fit(X_train, Y_train, epochs=epochs_per_steps, batch_size=batch_size,
+                               validation_data=(X_val, Y_val), verbose=verbose > 2, shuffle=True, class_weight=class_weights)
 
-                if compare_metrics(val_metrics[self.metrics[0]], max_val_metric, self.metrics[0]):
-                    max_val_metric = val_metrics[self.metrics[0]]
+                # Metrics after current step
+                train_metrics = self.evaluate(X_train, Y_train, verbose=verbose)
+                val_metrics = self.evaluate(X_val, Y_val, verbose=verbose)
+                if X_test is not None:
+                    test_metrics = self.evaluate(X_test, Y_test, verbose=verbose)
+
+                if self.check_idle(val_metrics[es_target], max_val_metric, es_target, es_delta):
+                    max_val_metric = val_metrics[es_target]
                     idle = 0
                     if self.save_dir:
                         self.save()
                 else:
                     idle += 1
                 step_count += 1
+
                 if verbose:
                     print('Step {} metrics:'.format(step_count))
-                    print('\tLoss --> Train: {}, Val: {}'.format(train_loss, val_loss))
-                    for i in self.metrics:
-                        print('\t{} --> Train: {}, Val: {}'.format(i, train_metrics[i], val_metrics[i]))
-                    print('\tExec. time: {} Idle: {}\n'.format(int(time.time() - step_time), idle))
-                    
-                    if X_test is not None:
-                        print('Testing metrics:')
-                        self.pred(X_test, Y_test, show_mode='print')
+                    print(pd.DataFrame([train_metrics, val_metrics, test_metrics], columns=train_metrics.keys(), index=['Train', 'Val', 'Test']).T)
+                    print('Exec. time: {} Idle: {}\n'.format(int(time.time() - step_time), idle))
 
         self.train_time = time.time() - time_start
 
-    def pred(self, X_test, Y_test, show_mode=None):
-        preds = self.model.predict(X_test, batch_size=8192)
-        preds, metrics, score = get_metrics(Y_test, preds, self.mode)
+    def check_idle(self, current, best, es_target=None, es_delta=10e-6):
+        diff = 0
+        if es_target == 'loss':
+            es_target = self.loss
+        if starting_metric[es_target] == 0:
+            diff = current - best
+        elif starting_metric[es_target] == np.inf:
+            diff = best - current
+        return diff > es_delta
 
-        if show_mode == 'file':
+    def keep_training(self, s, i, l, max_steps, max_idle):
+        if s > 1 and np.isnan(l):  # If gradient made loss explode
+            return False
+        if s >= max_steps or i >= max_idle:  # Normal early stopping of a net (it has converged)
+            return False
+        return True
+
+    def evaluate(self, X, Y, verbose=0):
+        metrics = {x: 0 for x in self.metrics}
+        m = self.model.evaluate(X, Y, batch_size=2**30, verbose=verbose > 4)
+        metrics['loss'] = m[0]
+        for i, j in enumerate(self.metrics[:-1]):
+            metrics[j] = m[i+1]
+        return metrics
+
+    def pred(self, X_test, Y_test, show_mode=None):
+        self.load()
+        preds = self.model.predict(X_test, batch_size=2**30)
+        metrics, df_metrics = get_metrics(Y_test, preds, self.mode)
+
+        if show_mode == 'file' or show_mode == 'both':
             if self.save_dir:
                 with open(self.save_dir + '.txt', 'w') as f:
                     self.model.summary(print_fn=lambda x: f.write(x + '\n'))
@@ -86,11 +111,11 @@ class Network:
             else:
                 print('Can\'t open file, no save dir specified')
 
-        elif show_mode == 'print':
+        elif show_mode == 'print' or show_mode == 'both' or show_mode == 'verbose':
             self.model.summary()
             print(metrics)
 
-        return preds, score
+        return preds, df_metrics
     
     def save(self):
         if self.save_dir:
@@ -105,33 +130,19 @@ class Network:
             print('Can\'t load, save_dir not defined.')
 
 
-class SequentialNetwork(Network):
-    def __init__(self, params):
-        super().__init__(params)
-
-        self.model = Sequential()
-        self.summary = self.model.summary
-        self.fit = self.model.fit
-        self.predict = self.model.predict
-
-
-    def add_activation(self):
-        if type(self.activation) == str:
-            self.model.add(Activation(self.activation))
-        else:
-            self.model.add(self.activation)
-
-
 class ModularNetwork(Network):
     def __init__(self, params):
         super().__init__(params)
 
         self.input = Input(shape=self.input_shape)
+        self.output = None
         self.layers += [self.input]
 
         self.summary = None
         self.predict = None
         self.fit = None
+
+        self.check_attrs()
 
     def add_layer(self, layer, arch=[]):
         if layer in main_layers:
@@ -185,43 +196,34 @@ class ModularNetwork(Network):
         self.predict = self.model.predict
         self.fit     = self.model.fit
 
+    def check_attrs(self):
+        if type(self.output_shape) == int:
+            self.output_shape = [self.output_shape, ]
+
+        self.metrics += ['loss']
+
     def compile(self):
         self.output = Activation(act_dict[self.mode])(self.layers[-1])
         self.model = Model(self.input, self.output)
 
-        self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=self.metrics)
+        m = list(pd.Series(self.metrics[:-1]).replace(custom_objects))
+
+        self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=m)
         self.link_model_methods()
 
 
-class FCNN(SequentialNetwork):
+class FCNN(ModularNetwork):
     def __init__(self, params):
         super().__init__(params)
 
         self.architecture = params['architecture']
 
-        self.__compile()
+        self.build_model()
+        self.compile()
 
-    def __compile(self):  # NN build
-        self.model.add(Dense(self.architecture[0], kernel_regularizer=self.regularizer, input_shape=self.input_shape))
-        if self.dropout != 0:
-            self.model.add(Dropout(self.dropout))
-        if self.batch_norm:
-            self.model.add(BatchNormalization())
-        self.add_activation()
-        for i in self.architecture[1:]:
-            self.model.add(Dense(i, kernel_regularizer=self.regularizer))
-            if self.dropout != 0:
-                self.model.add(Dropout(self.dropout))
-            if self.batch_norm:
-                self.model.add(BatchNormalization())
-            self.add_activation()
-
-        self.model.add(Dense(self.output_shape))
-        self.model.add(Activation(act_dict[self.mode]))
-
-        self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=self.metrics)
-        if self.save_dir:
-            self.save()
+    def build_model(self):
+        self.add_layer('Dense', self.architecture)
+        self.add_layer('Dense', self.output_shape)
 
 
 class CNN2D(ModularNetwork):
