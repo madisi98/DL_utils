@@ -92,7 +92,7 @@ class Network:
 
     def evaluate(self, X, Y, verbose=0):
         metrics = {x: 0 for x in self.metrics}
-        m = self.model.evaluate(X, Y, batch_size=2**30, verbose=verbose > 4)
+        m = self.model.evaluate(X, Y, batch_size=8192, verbose=verbose > 4)
         metrics['loss'] = m[0]
         for i, j in enumerate(self.metrics[:-1]):
             metrics[j] = m[i+1]
@@ -100,7 +100,7 @@ class Network:
 
     def pred(self, X_test, Y_test, show_mode=None):
         self.load()
-        preds = self.model.predict(X_test, batch_size=2**30)
+        preds = self.model.predict(X_test, batch_size=8192)
         metrics, df_metrics = get_metrics(Y_test, preds, self.mode)
 
         if show_mode == 'file' or show_mode == 'both':
