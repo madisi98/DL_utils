@@ -135,10 +135,11 @@ def get_metrics(y, preds, mode):
         df = pd.Series({
             'mean_squared_error': metrics.mean_squared_error(y, preds),
             'mean_absolute_error': metrics.mean_absolute_error(y, preds),
-            'mean_squared_logarithmic_error': metrics.mean_squared_log_error(y, preds),
+            # 'mean_squared_logarithmic_error': metrics.mean_squared_log_error(y, preds),
             'mean_absolute_percentage_error': mean_absolute_percentage_error(y, preds),
             'r2_score': metrics.r2_score(y, preds),
         })
         metric += '\n\n' + str(df) + '\n\n'
 
     return metric, df
+
