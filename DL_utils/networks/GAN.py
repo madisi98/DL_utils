@@ -4,10 +4,10 @@ from tensorflow.keras.models import load_model
 
 import sys
 
-from .networks import *
+from .core import Network
 
 
-class Generator(ModularNetwork):
+class Generator(Network):
     def __init__(self, params):
         super().__init__(params)
 
@@ -49,7 +49,7 @@ class Generator(ModularNetwork):
         return x, y_disc, y_class
 
 
-class Discriminator(ModularNetwork):
+class Discriminator(Network):
     def __init__(self, params):
         super().__init__(params)
 

@@ -4,8 +4,8 @@ import time
 from tensorflow.python.keras.models import Model, load_model
 from tensorflow.python.keras.layers import *
 
-from .utils import *
-from .dafaults import model_defaults, train_defaults
+from ..utils import *
+from ..defaults import model_defaults, train_defaults
 
 
 class Network:
@@ -28,6 +28,17 @@ class Network:
         self.layers = []
 
         self.model = None
+
+        self.input = Input(shape=self.input_shape)
+        self.output = None
+        self.layers += [self.input]
+
+        self.summary = None
+        self.predict = None
+        self.fit = None
+
+        create_results_directory(self.save_dir)
+        self.check_attrs()
 
     def train_network(self, params, x_train, y_train, x_val, y_val, x_test=None, y_test=None):
         params = {**train_defaults, **params}
@@ -62,14 +73,14 @@ class Network:
         while self.keep_training(step_count, idle, val_metrics[es_target], max_steps, max_idle):
             with tf.device('/gpu:0'):
                 step_time = time.time()
-                self.model.fit(x_train, y_train, epochs=epochs_per_steps, batch_size=batch_size,
-                               validation_data=(x_val, y_val), verbose=verbose > 2, shuffle=True,
-                               class_weight=class_weights)
+                self.fit(x_train, y_train, epochs=epochs_per_steps, batch_size=batch_size,
+                         validation_data=(x_val, y_val), verbose=verbose > 2, shuffle=True,
+                         class_weight=class_weights)
 
                 # Metrics after current step
                 train_metrics = self.evaluate(x_train, y_train, verbose=verbose)
                 val_metrics = self.evaluate(x_val, y_val, verbose=verbose)
-                if X_test is not None:
+                if x_test is not None:
                     test_metrics = self.evaluate(x_test, y_test, verbose=verbose)
 
                 if self.check_idle(val_metrics[es_target], max_val_metric, es_target, es_delta):
@@ -107,18 +118,18 @@ class Network:
             return False
         return True
 
-    def evaluate(self, X, Y, verbose=0):
-        metrics = {x: 0 for x in self.metrics}
-        m = self.model.evaluate(X, Y, batch_size=8192, verbose=verbose > 4)
+    def evaluate(self, x, y, verbose=0):
+        metrics = {i: 0 for i in self.metrics}
+        m = self.model.evaluate(x, y, batch_size=8192, verbose=verbose > 4)
         metrics['loss'] = m[0]
         for i, j in enumerate(self.metrics[:-1]):
-            metrics[j] = m[i+1]
+            metrics[j] = m[ i +1]
         return metrics
 
-    def pred(self, X_test, Y_test, show_mode=None):
+    def get_metrics(self, x_test, y_test, show_mode=None, labels=None):
         self.load()
-        preds = self.model.predict(X_test, batch_size=8192)
-        metrics, df_metrics = get_metrics(Y_test, preds, self.mode)
+        preds = self.model.predict(x_test, batch_size=8192)
+        metrics, df_metrics = compute_metrics(y_test, preds, self.mode, labels)
 
         if show_mode == 'file' or show_mode == 'both':
             if self.save_dir:
@@ -133,34 +144,18 @@ class Network:
             print(metrics)
 
         return preds, df_metrics
-    
+
     def save(self):
         if self.save_dir:
             self.model.save(os.path.join(self.save_dir, self.name) + '.h5')
         else:
             print('Can\'t save, save_dir not defined.')
-            
+
     def load(self):
         try:
             self.model = load_model(os.path.join(self.save_dir, self.name) + '.h5', custom_objects=custom_objects)
         except OSError:
             print('Could not load model, the specified dir does not exist')
-
-
-class ModularNetwork(Network):
-    def __init__(self, params):
-        super().__init__(params)
-
-        self.input = Input(shape=self.input_shape)
-        self.output = None
-        self.layers += [self.input]
-
-        self.summary = None
-        self.predict = None
-        self.fit = None
-
-        create_results_directory(self.save_dir)
-        self.check_attrs()
 
     def add_layer(self, layer, arch=[]):
         if layer in main_layers:
@@ -184,7 +179,8 @@ class ModularNetwork(Network):
                     self.add_layer('Dropout')
                 if self.batch_norm:
                     self.add_layer('BatchNormalization')
-                self.add_activation()
+                self.add_layer('Activation')
+
         if layer == 'Dropout':
             self.layers += [Dropout(self.dropout)(self.layers[-1])]
         if layer == 'BatchNormalization':
@@ -193,12 +189,11 @@ class ModularNetwork(Network):
             self.layers += [Reshape(arch)(self.layers[-1])]
         if layer == 'Flatten':
             self.layers += [Flatten()(self.layers[-1])]
-
-    def add_activation(self):
-        if type(self.activation) == str:
-            self.layers += [Activation(self.activation)(self.layers[-1])]
-        else:
-            self.layers += [self.activation(self.layers[-1])]
+        if layer == 'Activation':
+            if isinstance(self.activation, str):
+                self.layers += [Activation(self.activation)(self.layers[-1])]
+            else:
+                self.layers += [self.activation(self.layers[-1])]
 
     def get_layer(self, layer=None, pos=0):
         if layer is None:
@@ -207,7 +202,7 @@ class ModularNetwork(Network):
         print(l)
         l = [self.model.layers.index(i) for i in l]
         print(l)
-        return self.layers[l[pos]+1]
+        return self.layers[l[pos ] +1]
 
     def link_model_methods(self):
         self.summary = self.model.summary
@@ -230,36 +225,3 @@ class ModularNetwork(Network):
             m = list(pd.Series(self.metrics[:-1]).replace(custom_objects))
             self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=m)
         self.link_model_methods()
-
-
-class FCNN(ModularNetwork):
-    def __init__(self, params):
-        super().__init__(params)
-
-        self.architecture = params['architecture']
-
-        self.build_model()
-        self.compile()
-
-    def build_model(self):
-        self.add_layer('Dense', self.architecture)
-        self.add_layer('Dense', self.output_shape)
-
-
-class CNN2D(ModularNetwork):
-    def __init__(self, params):
-        super().__init__(params)
-
-        self.architecture = params['architecture']
-        self.archNN = params['archNN']
-        self.padding = params['padding']
-
-        self.build_model()
-        self.compile()
-
-    def build_model(self):
-        self.add_layer('Conv2D', self.architecture)
-        self.add_layer('Flatten')
-        self.add_layer('Dense', self.archNN)
-        self.add_layer('Dense', self.output_shape)
-

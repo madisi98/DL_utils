@@ -99,7 +99,7 @@ def f1_score(y_true, y_pred):
     return f1_score / tf.cast(y_pred.shape[1], np.float32)
 
 
-def get_metrics(y, preds, mode):
+def compute_metrics(y, preds, mode, labels=None):
     metric = '\n\n'
     metric += 'Trues shape:        ' + str(y.shape) + '\n'
     metric += 'Predictions shape:  ' + str(preds.shape) + '\n'
@@ -114,11 +114,14 @@ def get_metrics(y, preds, mode):
         metric += 'True values:        ' + str(np.unique(y)) + '\n'
         metric += 'Prediction values:  ' + str(np.unique(preds)) + '\n'
 
+        if labels is None:
+            labels = list(range(np.unique(y).shape[0]))
+
         df = pd.DataFrame({
             'f1_score': metrics.f1_score(y, preds, average=None),
             'precision': metrics.precision_score(y, preds, average=None),
             'recall': metrics.recall_score(y, preds, average=None),
-        }, index=list(range(np.unique(y).shape[0]))).T
+        }, index=labels).T
         df['Macro'] = np.mean(df, axis=1)
         df['Micro'] = pd.Series({
             'f1_score': metrics.f1_score(y, preds, average='micro'),
