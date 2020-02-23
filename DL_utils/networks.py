@@ -1,11 +1,16 @@
+import os
+import time
+
 from tensorflow.python.keras.models import Model, load_model
 from tensorflow.python.keras.layers import *
-from DL_utils.utils import *
-import time
+
+from .utils import *
+from .dafaults import model_defaults, train_defaults
 
 
 class Network:
     def __init__(self, params):
+        params = {**model_defaults, **params}
         self.input_shape = params['input_shape']
         self.regularizer = params['regularizer']
         self.dropout = params['dropout']
@@ -17,27 +22,36 @@ class Network:
         self.output_shape = params['output_shape']
         self.mode = params['mode']
         self.save_dir = params['save_dir']
+        self.name = params['model_name']
         self.scaler = params['scaler']
         self.train_time = None
         self.layers = []
 
         self.model = None
 
-    def trainNetwork(self, params, X_train, Y_train, X_val, Y_val, X_test=None, Y_test=None):
-        max_steps = params['max_epochs']
-        max_idle = params['max_idle']
-        batch_size = params['batch_size']
-        verbose = params['verbose']
-        epochs_per_steps = params['epochs_per_step']
-        class_weights = params['class_weights']
-        es_delta = params['es_delta']
-        es_target = params['es_target']
+    def train_network(self, params, x_train, y_train, x_val, y_val, x_test=None, y_test=None):
+        params = {**train_defaults, **params}
+        max_steps = params['max_epochs']   # Max number of steps the training will take
+        max_idle = params['max_idle']      # Max number of steps without improving the training will take
+        batch_size = params['batch_size']  # Batch size for the training
+        verbose = params['verbose']        # Verbosity
+        epochs_per_steps = params['epochs_per_step']  # Epochs per training step
+        class_weights = params['class_weights']  # Class weights
+        es_delta = params['es_delta']      # Early stopping delta that will be considered
+        es_target = params['es_target']    # Early stopping target
 
         step_count = 0
         idle = 0
         time_start = time.time()
         val_metrics = {x: '---' for x in self.metrics}
         test_metrics = {x: '---' for x in self.metrics}
+
+        if es_target is None:
+            if self.metrics is None:
+                es_target == self.loss
+            else:
+                es_target = self.metrics[0]
+
         if es_target == 'loss':
             max_val_metric = starting_metric[self.loss]
         else:
@@ -48,14 +62,15 @@ class Network:
         while self.keep_training(step_count, idle, val_metrics[es_target], max_steps, max_idle):
             with tf.device('/gpu:0'):
                 step_time = time.time()
-                self.model.fit(X_train, Y_train, epochs=epochs_per_steps, batch_size=batch_size,
-                               validation_data=(X_val, Y_val), verbose=verbose > 2, shuffle=True, class_weight=class_weights)
+                self.model.fit(x_train, y_train, epochs=epochs_per_steps, batch_size=batch_size,
+                               validation_data=(x_val, y_val), verbose=verbose > 2, shuffle=True,
+                               class_weight=class_weights)
 
                 # Metrics after current step
-                train_metrics = self.evaluate(X_train, Y_train, verbose=verbose)
-                val_metrics = self.evaluate(X_val, Y_val, verbose=verbose)
+                train_metrics = self.evaluate(x_train, y_train, verbose=verbose)
+                val_metrics = self.evaluate(x_val, y_val, verbose=verbose)
                 if X_test is not None:
-                    test_metrics = self.evaluate(X_test, Y_test, verbose=verbose)
+                    test_metrics = self.evaluate(x_test, y_test, verbose=verbose)
 
                 if self.check_idle(val_metrics[es_target], max_val_metric, es_target, es_delta):
                     max_val_metric = val_metrics[es_target]
@@ -68,7 +83,9 @@ class Network:
 
                 if verbose:
                     print('Step {} metrics:'.format(step_count))
-                    print(pd.DataFrame([train_metrics, val_metrics, test_metrics], columns=train_metrics.keys(), index=['Train', 'Val', 'Test']).T)
+                    print(pd.DataFrame([train_metrics, val_metrics, test_metrics],
+                                       columns=train_metrics.keys(),
+                                       index=['Train', 'Val', 'Test']).T)
                     print('Exec. time: {} Idle: {}\n'.format(int(time.time() - step_time), idle))
 
         self.train_time = time.time() - time_start
@@ -105,7 +122,7 @@ class Network:
 
         if show_mode == 'file' or show_mode == 'both':
             if self.save_dir:
-                with open(self.save_dir + '.txt', 'w') as f:
+                with open(os.path.join(self.save_dir, self.name) + '.txt', 'w') as f:
                     self.model.summary(print_fn=lambda x: f.write(x + '\n'))
                     f.write(metrics)
             else:
@@ -119,15 +136,15 @@ class Network:
     
     def save(self):
         if self.save_dir:
-            self.model.save(self.save_dir + '.h5')
+            self.model.save(os.path.join(self.save_dir, self.name) + '.h5')
         else:
             print('Can\'t save, save_dir not defined.')
             
     def load(self):
-        if self.save_dir:
-            self.model = load_model(self.save_dir + '.h5', custom_objects=custom_objects)
-        else:
-            print('Can\'t load, save_dir not defined.')
+        try:
+            self.model = load_model(os.path.join(self.save_dir, self.name) + '.h5', custom_objects=custom_objects)
+        except OSError:
+            print('Could not load model, the specified dir does not exist')
 
 
 class ModularNetwork(Network):
@@ -142,6 +159,7 @@ class ModularNetwork(Network):
         self.predict = None
         self.fit = None
 
+        create_results_directory(self.save_dir)
         self.check_attrs()
 
     def add_layer(self, layer, arch=[]):
@@ -197,18 +215,20 @@ class ModularNetwork(Network):
         self.fit     = self.model.fit
 
     def check_attrs(self):
-        if type(self.output_shape) == int:
+        if isinstance(self.output_shape, int):
             self.output_shape = [self.output_shape, ]
 
         self.metrics += ['loss']
 
     def compile(self):
         self.output = Activation(act_dict[self.mode])(self.layers[-1])
-        self.model = Model(self.input, self.output)
 
-        m = list(pd.Series(self.metrics[:-1]).replace(custom_objects))
-
-        self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=m)
+        if os.path.isfile(os.path.join(self.save_dir, self.name) + '.h5'):
+            self.load()
+        else:
+            self.model = Model(self.input, self.output)
+            m = list(pd.Series(self.metrics[:-1]).replace(custom_objects))
+            self.model.compile(optimizer=self.optimizer, loss=self.loss, metrics=m)
         self.link_model_methods()
 
 

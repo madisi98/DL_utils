@@ -1,6 +1,6 @@
 import os
-from DL_utils.plots import *
-from DL_utils.metrics import *
+from .plots import *
+from .metrics import *
 
 main_layers = ['Dense', 'Conv1D', 'Conv2D', 'LSTM', 'Conv2DTranspose']
 
