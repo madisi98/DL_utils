@@ -62,14 +62,27 @@ def subsample_dataset(X, Y, samples_per_class=None, proportions=None):
     return X_classes, Y_classes
 
 
+def keep_training(s, i, l, max_steps, max_idle):
+    if s > 1 and np.isnan(l):  # If gradient made loss explode
+        return False
+    if s >= max_steps or i >= max_idle:  # Normal early stopping of a net (it has converged)
+        return False
+    return True
+
 ####################
 #  LOSS FUNCTIONS  #
 ####################
 
 
 def feature_matching_loss(y_true, y_pred):
+    # k multiplies stds making them more important for the gradient calculation
+    # It should be treated as a hyperparameter of loss function.
+    # TODO: Implement k as an argument of the loss function
+    k = 2
+
     means = tf.square( tf.reduce_mean(y_true, axis=1) - tf.reduce_mean(y_pred, axis=1) )
     stds = tf.square( tf.math.reduce_std(y_true, axis=1) - tf.math.reduce_std(y_pred, axis=1) )
+    stds *= k
     return tf.reduce_mean( tf.concat( [means, stds], axis=0 ) )
 
 

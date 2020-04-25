@@ -9,9 +9,11 @@ model_defaults = {
         'metrics': None,
         'output_shape': None,
         'mode': None,
+        'load_model': False,
         'save_dir': '',
         'model_name': 'tmp',
-        'scaler': None}
+        'scaler': None,
+        'architecture': None}
 
 train_defaults = {
         'max_epochs': 100,
@@ -20,6 +22,7 @@ train_defaults = {
         'verbose': False,
         'epochs_per_step': 5,
         'class_weights': None,
+        'warm_up': 0,
         'es_delta': 10e-4,
         'es_target': None,
 }

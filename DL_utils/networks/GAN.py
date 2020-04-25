@@ -1,10 +1,12 @@
+import time
+import sys
+
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, LeakyReLU, Dropout, BatchNormalization, Activation
 from tensorflow.keras.models import load_model
 
-import sys
-
 from .core import Network
+from ..utils import *
 
 
 class Generator(Network):
@@ -22,7 +24,7 @@ class Generator(Network):
             self.add_layer(layer, arch)
 
         if len(self.output_shape) == 1:
-            out_layer = Dense(self.output_shape, kernel_regularizer=self.regularizer)(self.layers[-1])
+            out_layer = Dense(self.output_shape[0], kernel_regularizer=self.regularizer)(self.layers[-1])
         else:
             out_layer = Conv2D(1, self.architecture[1][1][:2], padding='same',
                                kernel_regularizer=self.regularizer)(self.layers[-1])
@@ -59,6 +61,7 @@ class Discriminator(Network):
         self.__compile()
 
     def __compile(self):
+        m = [x for x in self.metrics if x != 'loss']
         for layer, arch in self.architecture:
             self.add_layer(layer, arch)
 
@@ -67,15 +70,15 @@ class Discriminator(Network):
         self.d_output = Dense(self.output_shape[0], kernel_regularizer=self.regularizer)(self.layers[-1])
         self.d_output = Activation(act_dict[self.mode[0]])(self.d_output)
         self.model = Model(self.input, self.d_output)
-        self.model.compile(loss=self.loss[0], optimizer=self.optimizer[0], metrics=self.metrics)
+        self.model.compile(loss=self.loss[0], optimizer=self.optimizer[0], metrics=m)
 
         self.model.trainable = False
 
-        self.layers += [Dense(100, kernel_regularizer=self.regularizer)(self.get_layer('flatten'))]
+        self.add_layer('Dense', [100])
         self.c_output = Dense(self.output_shape[1])(self.layers[-1])
         self.c_output = Activation(act_dict[self.mode[1]])(self.c_output)
         self.c_model = Model(self.input, self.c_output)
-        self.c_model.compile(loss=self.loss[1], optimizer=self.optimizer[1], metrics=self.metrics)
+        self.c_model.compile(loss=self.loss[1], optimizer=self.optimizer[1], metrics=m)
 
 
 class GAN:
@@ -101,7 +104,7 @@ class GAN:
         self.classifier = Network(params)
         self.classifier.model = self.discriminator.c_model
         self.discriminator.mode, self.classifier.mode = self.discriminator.mode
-        self.discriminator.save_dir, self.classifier.save_dir = self.discriminator.save_dir
+        self.discriminator.name, self.classifier.name = self.discriminator.name
 
         self.discriminator.link_model_methods()
 
@@ -126,14 +129,14 @@ class GAN:
         self.discriminator.save()
         self.generator.save()
         self.classifier.save()
-        self.model.save(self.save_dir + 'GAN.h5')
+        self.model.save(os.path.join(self.save_dir, 'GAN.h5'))
 
-    def load(self):
+    def load(self, compile=True):
         # Loads every model of the GAN (From save_dir)
-        self.discriminator.load()
-        self.generator.load()
-        self.classifier.load()
-        self.model = load_model(self.save_dir + 'GAN.h5', custom_objects=custom_objects)
+        self.discriminator.load(compile)
+        self.generator.load(compile)
+        self.classifier.load(compile)
+        self.model = load_model(os.path.join(self.save_dir, 'GAN.h5'), custom_objects=custom_objects, compile=compile)
 
     def check_idle(self, c, m, mean='standard', verbose=False):
         # Validation loss from (d)iscriminator, (g)enerator, (c)lassifier and (m) best values
@@ -192,8 +195,8 @@ class GAN:
         if verbose:
             print("Started training:")
 
-        while keep_training(step_count, idle, val_loss, max_epochs, max_idle):
-            with tf.device('/gpu:0'):
+        with tf.device('/gpu:0'):
+            while keep_training(step_count, idle, val_loss, max_epochs, max_idle):
                 step_time = time.time()
 
                 # Generate Dataset for current epoch
@@ -262,78 +265,103 @@ class GAN:
         max_val_losses = [starting_metric[mean]] * 7
         step_time = time.time()
 
-        half_batch = int(self.batch_size / 2)
-        batch_per_epoch = int(X_real.shape[0] / self.batch_size)
+        half_batch = self.batch_size // 2
+        batch_per_epoch = X_real.shape[0] // self.batch_size - 1
         n_steps = batch_per_epoch * max_epochs
+
+        index_list = np.arange(X_real.shape[0])
+        index_list_class = np.arange(X_real_class.shape[0])
+
         print('Epochs: {}; Batch Size: {}; Batch/Epoch: {}; Total Batches: {}'.format(max_epochs, self.batch_size,
                                                                                       batch_per_epoch, n_steps))
         print('Started training on batches...\n')
         print('                        D Loss  D Acc           G Loss         C Loss   C acc                ')
         print('---------------------------------------------------------------------------------------------')
-        while keep_training(epoch, idle, 0, max_epochs, max_idle):
-            step_count += 1
-            batch_index = np.random.choice(range(X_real.shape[0]), int(half_batch), replace=False)
-            if half_batch > X_real_class.shape[0]:
-                batch_index_class = np.arange(X_real_class.shape[0])
-            else:
-                batch_index_class = np.random.choice(range(X_real_class.shape[0]), int(half_batch), replace=False)
-            X_fake, Y_fake_disc = self.generator.generate_fake_samples(half_batch), np.zeros(half_batch)
-            latent_z = self.generator.generate_latent_vectors(int(fake_ratio * self.batch_size))
-            if not self.hidden_layer_output:
-                Y_train_gen = np.ones(latent_z.shape[0])
-            else:
-                Y_train_gen = self.discriminator.last_hidden_model.predict(X_real[batch_index])
+        with tf.device('/GPU:0'):
+            while keep_training(epoch, idle, 0, max_epochs, max_idle):
+                batch_time = time.time()
+                if step_count % batch_per_epoch == 0:
+                    index_list = np.random.permutation(index_list)
+                    index_list_class = np.random.permutation(index_list_class)
+                    X_fake, Y_fake_disc = self.generator.generate_fake_samples(half_batch), np.zeros(half_batch)
+                    latent_z = self.generator.generate_latent_vectors(int(fake_ratio * self.batch_size))
 
-            if train_classifier:
-                c_loss, c_acc = self.classifier.model.train_on_batch(X_real_class[batch_index_class],
-                                                                     Y_real_class[batch_index_class])
-            d_loss1, d_acc1 = self.discriminator.model.train_on_batch(X_real[batch_index], Y_real_disc[batch_index])
-            d_loss2, d_acc2 = self.discriminator.model.train_on_batch(X_fake, Y_fake_disc)
-            g_loss = self.model.train_on_batch(latent_z, Y_train_gen)
+                step = step_count % batch_per_epoch
+                step_count += 1
 
-            if step_count % batch_per_epoch == 0:
-                epoch += 1
+                batch_index = slice(step*half_batch, (step+1)*half_batch)
+                batch_index_gen = slice(step*half_batch, (step+2)*half_batch)
+                batch_index_class = batch_index
 
-                train_losses = self.get_losses(X_real[batch_index], Y_real_disc[batch_index],
-                                               Y_real_class[batch_index_class], X_real_class[batch_index_class])
-                val_losses = self.get_losses(X_real_val, Y_real_disc_val, Y_real_class_val)
-                if epoch > warm_up:
-                    if self.check_idle(val_losses, max_val_losses, mean=mean):
-                        max_val_losses = val_losses
-                        idle = 0
-                        self.save()
-                    else:
-                        idle += 1
-                step_time = np.round(time.time() - step_time)
-                if verbose:
-                    print(
-                        'Epoch {:3d} idle {:2d}: Disc[{:.5f};{:.5f}]; Gen[{:.5f}]; Class[{:.5f};{:.5f}]; Time: {}s'.format(
-                            epoch, idle, *train_losses, step_time))
-                    print(
-                        '              Val: Disc[{:.5f};{:.5f}]; Gen[{:.5f}]; Class[{:.5f};{:.5f}]'.format(*val_losses))
-                if plot:
-                    rows = 2
-                    columns = 10
+                if not self.hidden_layer_output:
+                    Y_train_gen = np.ones(latent_z.shape[0])
+                else:
+                    Y_train_gen = self.discriminator.last_hidden_model.predict(X_real[batch_index_gen])
 
-                    plt.figure(figsize=(15, 3))
-                    for i in range(rows * columns):
-                        plt.subplot(rows, columns, i + 1)
-                        plt.axis('off')
-                        rn = self.generator.generate_fake_samples(1, latent_z=self.latent_vectors[i].reshape(1, -1))
-                        plt.imshow(rn.reshape(28, 28), cmap='gray')
-                    plt.show()
-                step_time = time.time()
+                if train_classifier:
+                    c_loss, c_acc = self.classifier.model.train_on_batch(X_real_class[batch_index_class],
+                                                                         Y_real_class[batch_index_class])
+                d_loss1, d_acc1 = self.discriminator.model.train_on_batch(X_real[batch_index], Y_real_disc[batch_index])
+                d_loss2, d_acc2 = self.discriminator.model.train_on_batch(X_fake, Y_fake_disc)
+
+                g_loss = self.model.train_on_batch(latent_z, Y_train_gen)
+
+                if step_count % batch_per_epoch == 0:
+                    epoch += 1
+
+                    train_losses = self.get_losses(X_real[batch_index], Y_real_disc[batch_index],
+                                                   Y_real_class[batch_index_class], X_real_class[batch_index_class])
+                    val_losses = self.get_losses(X_real_val, Y_real_disc_val, Y_real_class_val)
+                    if epoch > warm_up:
+                        if self.check_idle(val_losses, max_val_losses, mean=mean):
+                            max_val_losses = val_losses
+                            idle = 0
+                            self.save()
+                        else:
+                            idle += 1
+                    step_time = np.round(time.time() - step_time)
+                    if verbose:
+                        print(
+                            'Epoch {:3d} idle {:2d}: Disc[{:.5f};{:.5f}]; Gen[{:.5f}]; Class[{:.5f};{:.5f}]; Time: {}s'.format(
+                                epoch, idle, *train_losses, step_time))
+                        print(
+                            '              Val: Disc[{:.5f};{:.5f}]; Gen[{:.5f}]; Class[{:.5f};{:.5f}]'.format(*val_losses))
+                    if plot:
+                        rows = 2
+                        columns = 10
+
+                        plt.figure(figsize=(15, 3))
+                        for i in range(rows * columns):
+                            plt.subplot(rows, columns, i + 1)
+                            plt.axis('off')
+                            rn = self.generator.generate_fake_samples(1, latent_z=self.latent_vectors[i].reshape(1, -1))
+                            plt.imshow(rn.reshape(28, 28), cmap='gray')
+                        plt.show()
+                    step_time = time.time()
+                if verbose > 3:
+                    print('Batch time:', time.time() - batch_time)
 
     def score(self, X_real_test, Y_real_class_test, Y_real_disc_test, load_checkpoint=False, show_mode='print'):
         if load_checkpoint:
-            self.load()
+            self.load(compile=False)
 
-        X_fake_test, Y_fake_disc_test, Y_fake_class_test = self.generator.generate_fake_dataset(X_real_test.shape[0],
-                                                                                                Y_real_class_test.shape[
-                                                                                                    1])
+        X_fake_test, Y_fake_disc_test, Y_fake_class_test = self.generator.generate_fake_dataset(X_real_test.shape[0], Y_real_class_test.shape[1])
         X_test = np.append(X_real_test, X_fake_test, axis=0)
         Y_test_disc = np.append(Y_real_disc_test, Y_fake_disc_test, axis=0)
         Y_test_class = np.append(Y_real_class_test, Y_fake_class_test, axis=0)
 
         self.discriminator.pred(X_test, Y_test_disc, show_mode=show_mode)
         self.classifier.pred(X_real_test, Y_real_class_test, show_mode=show_mode)
+
+    def get_percentage_of_likeness(self, X_real_test, load_checkpoint=False):
+        if load_checkpoint:
+            self.load(compile=False)
+
+        X_fake_test, _, _ = self.generator.generate_fake_dataset(
+            X_real_test.shape[0], 1)
+
+        a = pd.DataFrame(X_fake_test).describe()
+        b = pd.DataFrame(X_real_test).describe()
+        c = a/b
+        n = 2
+        return c.iloc[1:n+1].apply(lambda s: s.apply(lambda x: 0.95 < x < 1.05)).sum().sum() / (2 * X_real_test.shape[0])

@@ -23,7 +23,14 @@ class Network:
         self.mode = params['mode']
         self.save_dir = params['save_dir']
         self.name = params['model_name']
+        self.load_model = params['load_model']
         self.scaler = params['scaler']
+
+        diff_params = set(params.keys() - model_defaults.keys())
+        if diff_params:
+            print(f'WARNING: {diff_params}')
+            print('This parameters are not understood by DL_utils, therefore they will be omitted.')
+
         self.train_time = None
         self.layers = []
 
@@ -48,6 +55,7 @@ class Network:
         verbose = params['verbose']        # Verbosity
         epochs_per_steps = params['epochs_per_step']  # Epochs per training step
         class_weights = params['class_weights']  # Class weights
+        warm_up = params['warm_up']      # Early stopping delta that will be considered
         es_delta = params['es_delta']      # Early stopping delta that will be considered
         es_target = params['es_target']    # Early stopping target
 
@@ -56,6 +64,11 @@ class Network:
         time_start = time.time()
         val_metrics = {x: '---' for x in self.metrics}
         test_metrics = {x: '---' for x in self.metrics}
+
+        diff_params = set(params.keys() - train_defaults.keys())
+        if diff_params:
+            print(f'WARNING: {diff_params}')
+            print('This parameters are not understood by DL_utils, therefore they will be omitted.')
 
         if es_target is None:
             if self.metrics is None:
@@ -83,7 +96,7 @@ class Network:
                 if x_test is not None:
                     test_metrics = self.evaluate(x_test, y_test, verbose=verbose)
 
-                if self.check_idle(val_metrics[es_target], max_val_metric, es_target, es_delta):
+                if self.check_idle(val_metrics[es_target], max_val_metric, es_target, es_delta) or step_count < warm_up:
                     max_val_metric = val_metrics[es_target]
                     idle = 0
                     if self.save_dir:
@@ -127,8 +140,8 @@ class Network:
         return metrics
 
     def get_metrics(self, x_test, y_test, show_mode=None, labels=None):
-        self.load()
-        preds = self.model.predict(x_test, batch_size=8192)
+        self.load(compile=False)
+        preds = self.model.predict(x_test, batch_size=64000)
         metrics, df_metrics = compute_metrics(y_test, preds, self.mode, labels)
 
         if show_mode == 'file' or show_mode == 'both':
@@ -139,7 +152,7 @@ class Network:
             else:
                 print('Can\'t open file, no save dir specified')
 
-        elif show_mode == 'print' or show_mode == 'both' or show_mode == 'verbose':
+        if show_mode == 'print' or show_mode == 'both' or show_mode == 'verbose':
             self.model.summary()
             print(metrics)
 
@@ -151,29 +164,36 @@ class Network:
         else:
             print('Can\'t save, save_dir not defined.')
 
-    def load(self):
+    def load(self, compile=True):
         try:
-            self.model = load_model(os.path.join(self.save_dir, self.name) + '.h5', custom_objects=custom_objects)
+            self.model = load_model(os.path.join(self.save_dir, self.name) + '.h5',
+                                    custom_objects=custom_objects, compile=compile)
         except OSError:
             print('Could not load model, the specified dir does not exist')
 
-    def add_layer(self, layer, arch=[]):
+    def add_layer(self, layer, arch=[], in_layer=None):
+        if in_layer is None:
+            in_layer = self.layers[-1]
+        if isinstance(arch, int):
+            arch = [arch]
+
         if layer in main_layers:
             for neurons in arch:
                 if layer == 'Dense':
-                    self.layers += [Dense(neurons, kernel_regularizer=self.regularizer)(self.layers[-1])]
+                    self.layers += [Dense(neurons, kernel_regularizer=self.regularizer)(in_layer)]
 
                 if layer == 'Conv1D':
                     self.layers += [Conv1D(neurons[0], neurons[1], neurons[2], padding=self.padding,
-                                           kernel_regularizer=self.regularizer)(self.layers[-1])]
+                                           kernel_regularizer=self.regularizer)(in_layer)]
                 if layer == 'Conv2D':
                     self.layers += [Conv2D(neurons[0], neurons[1], neurons[2], padding=self.padding,
-                                           kernel_regularizer=self.regularizer)(self.layers[-1])]
+                                           kernel_regularizer=self.regularizer)(in_layer)]
                 if layer == 'Conv2DTranspose':
                     self.layers += [Conv2DTranspose(neurons[0], neurons[1], neurons[2], padding='same',
-                                                    kernel_regularizer=self.regularizer)(self.layers[-1])]
+                                                    kernel_regularizer=self.regularizer)(in_layer)]
                 if layer == 'LSTM':
-                    pass
+                    print('LSTM not supported yet.')
+                    pass  # TODO: Implement LSTM support.
 
                 if self.dropout:
                     self.add_layer('Dropout')
@@ -181,28 +201,28 @@ class Network:
                     self.add_layer('BatchNormalization')
                 self.add_layer('Activation')
 
+                in_layer = self.layers[-1]
+
         if layer == 'Dropout':
-            self.layers += [Dropout(self.dropout)(self.layers[-1])]
+            self.layers += [Dropout(self.dropout)(in_layer)]
         if layer == 'BatchNormalization':
-            self.layers += [BatchNormalization(momentum=0.8)(self.layers[-1])]
+            self.layers += [BatchNormalization(momentum=0.8)(in_layer)]
         if layer == 'Reshape':
-            self.layers += [Reshape(arch)(self.layers[-1])]
+            self.layers += [Reshape(arch)(in_layer)]
         if layer == 'Flatten':
-            self.layers += [Flatten()(self.layers[-1])]
+            self.layers += [Flatten()(in_layer)]
         if layer == 'Activation':
             if isinstance(self.activation, str):
-                self.layers += [Activation(self.activation)(self.layers[-1])]
+                self.layers += [Activation(self.activation)(in_layer)]
             else:
-                self.layers += [self.activation(self.layers[-1])]
+                self.layers += [self.activation(in_layer)]
 
     def get_layer(self, layer=None, pos=0):
         if layer is None:
             return self.layers[pos]
         l = [x for x in self.model.layers if layer == x._name]
-        print(l)
         l = [self.model.layers.index(i) for i in l]
-        print(l)
-        return self.layers[l[pos ] +1]
+        return self.layers[l[pos] + 1]
 
     def link_model_methods(self):
         self.summary = self.model.summary
@@ -211,14 +231,20 @@ class Network:
 
     def check_attrs(self):
         if isinstance(self.output_shape, int):
-            self.output_shape = [self.output_shape, ]
+            self.output_shape = [self.output_shape, ]  # Casting integer output as list
+
+        if isinstance(self.loss, str):
+            if self.loss in custom_objects:
+                self.loss = custom_objects[self.loss]  # Converting str loss to custom func loss
+        elif isinstance(self.loss, list):
+            self.loss = [custom_objects[x] if x in custom_objects else x for x in self.loss]
 
         self.metrics += ['loss']
 
     def compile(self):
         self.output = Activation(act_dict[self.mode])(self.layers[-1])
 
-        if os.path.isfile(os.path.join(self.save_dir, self.name) + '.h5'):
+        if os.path.isfile(os.path.join(self.save_dir, self.name) + '.h5') and self.load_model:
             self.load()
         else:
             self.model = Model(self.input, self.output)
